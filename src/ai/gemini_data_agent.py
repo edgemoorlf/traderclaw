@@ -346,6 +346,10 @@ Be precise with numbers. If data is not available, use null."""
 
     def _extract_json(self, text: str) -> str:
         """Extract JSON from text that might contain markdown or extra content."""
+        # Handle None or empty text
+        if not text:
+            return "{}"
+
         # Try to find JSON in code blocks
         if "```json" in text:
             start = text.find("```json") + 7
