@@ -1,0 +1,30 @@
+# Broker Configuration
+#
+# Configure trading brokers. Paper/sandbox mode is enabled by default.
+# Live trading requires explicit opt-in.
+
+brokers:
+  alpaca:
+    enabled: true
+    description: "US stock trading via Alpaca"
+    paper: true  # Default to paper trading - set to false for live trading
+    paper_url: "https://paper-api.alpaca.markets"
+    live_url: "https://api.alpaca.markets"
+    api_key: ${ALPACA_API_KEY}
+    secret_key: ${ALPACA_SECRET_KEY}
+    # Features:
+    # - Fractional shares supported
+    # - Extended hours trading (24/5)
+    # - $0 commission
+
+  okx:
+    enabled: true
+    description: "Cryptocurrency trading via OKX"
+    sandbox: true  # Default to demo trading - set to false for live trading
+    base_url: "https://www.okx.com"
+    api_key: ${OKX_API_KEY}
+    api_secret: ${OKX_API_SECRET}
+    passphrase: ${OKX_PASSPHRASE}
+    # NOTE: OKX US only supports spot trading
+    # Futures and margin trading are not available
+    # Demo trading uses x-simulated-trading: 1 header

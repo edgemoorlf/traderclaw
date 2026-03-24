@@ -1,0 +1,27 @@
+# Market Data Source Configuration
+#
+# Configure which data sources are enabled and their settings.
+
+sources:
+  yahoo_finance:
+    enabled: true
+    description: "US stock market data via Yahoo Finance"
+    # No authentication required
+
+  coingecko:
+    enabled: true
+    description: "Cryptocurrency market data via CoinGecko"
+    api_key: ${COINGECKO_API_KEY}  # Optional: free tier works without key
+    base_url: "https://api.coingecko.com/api/v3"
+
+  polymarket:
+    enabled: true
+    description: "Prediction market data via Polymarket Gamma API (READ-ONLY)"
+    base_url: "https://gamma-api.polymarket.com"
+    # NOTE: This is a READ-ONLY data source.
+    # NO trading functionality is implemented for Polymarket.
+    # Trading on Polymarket would require:
+    # - Wallet integration (MetaMask, etc.)
+    # - EIP-712 message signing
+    # - CLOB API credentials
+    # - USDC on Polygon
