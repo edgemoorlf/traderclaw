@@ -63,3 +63,5 @@ CLAUDE.md
 
 # Claude Code
 .claude/
+
+node_modules/

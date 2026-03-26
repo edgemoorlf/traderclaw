@@ -197,6 +197,161 @@ uv run python -m src.interfaces.cli.main morning-briefing \
     --csv path/to/positions.csv
 ```
 
+---
+
+### 策略管理（新增）
+
+TraderClaw 现支持**自然语言策略**，AI 会解读并执行你的策略描述，无需编写代码。
+
+#### 创建策略
+
+```bash
+# 创建简单策略
+uv run python -m src.interfaces.cli.main strategy create my_strategy \
+    --description "当 RSI 超卖且情绪积极时买入科技股" \
+    --symbols AAPL MSFT NVDA \
+    --mode hybrid
+
+# 交互模式（推荐用于复杂策略）
+uv run python -m src.interfaces.cli.main strategy create my_strategy -i
+```
+
+**审批模式：**
+- `autonomous`（自主模式）- AI 在安全范围内自动执行交易
+- `hybrid`（混合模式）- 高置信度信号自动执行，其他需审批
+- `approval`（审批模式）- 每笔交易都需你明确批准
+- `notify`（通知模式）- AI 建议交易，你手动执行
+
+#### 列出和管理策略
+
+```bash
+# 列出所有策略
+uv run python -m src.interfaces.cli.main strategy list
+
+# 查看策略详情
+uv run python -m src.interfaces.cli.main strategy show <strategy_id>
+
+# 删除策略
+uv run python -m src.interfaces.cli.main strategy delete <strategy_id>
+```
+
+#### 运行策略
+
+```bash
+# 模拟运行 - 生成信号但不执行
+uv run python -m src.interfaces.cli.main strategy run <strategy_id> --dry-run
+
+# 使用指定账户运行
+uv run python -m src.interfaces.cli.main strategy run <strategy_id> \
+    --account my_paper_account
+```
+
+#### 管理券商账户
+
+```bash
+# 列出已配置账户
+uv run python -m src.interfaces.cli.main strategy accounts --list
+
+# 添加模拟交易账户
+uv run python -m src.interfaces.cli.main strategy accounts \
+    --add-paper my_paper_account \
+    --name "My Paper Trading"
+
+# 删除账户
+uv run python -m src.interfaces.cli.main strategy accounts --remove <account_id>
+```
+
+#### 示例：完整策略工作流
+
+```bash
+# 1. 添加模拟交易账户
+uv run python -m src.interfaces.cli.main strategy accounts \
+    --add-paper tech_strategy_paper \
+    --name "Tech Strategy Paper Account"
+
+# 2. 创建策略
+uv run python -m src.interfaces.cli.main strategy create tech_momentum \
+    --description "买入超卖科技股（RSI < 30）且新闻情绪积极。仓位大小：每笔交易 5%。最多 3 个持仓。" \
+    --symbols AAPL MSFT NVDA GOOGL \
+    --mode hybrid \
+    --threshold 0.85 \
+    --max-positions 3
+
+# 3. 运行策略（先模拟）
+uv run python -m src.interfaces.cli.main strategy run tech_momentum --dry-run
+
+# 4. 实盘运行（模拟盘）
+uv run python -m src.interfaces.cli.main strategy run tech_momentum \
+    --account tech_strategy_paper
+```
+
+---
+
+### Web 界面（新增）
+
+TraderClaw 现在包含现代化的 Web 界面，专为非技术用户设计。Web 界面提供单一屏幕仪表板，你可以管理持仓、使用自然语言创建策略，并审批交易信号。
+
+#### 启动 Web 界面
+
+```bash
+# 1. 安装前端依赖
+cd web
+npm install
+
+# 2. 启动前端开发服务器
+npm run dev
+
+# 3. 在另一个终端启动后端 API
+uv run python -m src.interfaces.web.main
+```
+
+然后在浏览器中打开 `http://localhost:3000`。
+
+#### Web 界面功能
+
+**单一屏幕仪表板：**
+- **投资组合概览** - 总价值、每日变动、所有持仓
+- **持仓管理** - 点击任意持仓查看详情、盈亏和活跃策略
+- **AI 聊天界面** - 输入自然语言命令，如"在 $800 时卖出 50% 的 NVDA"
+- **信号审批** - 内联审查和批准交易信号
+- **实时更新** - WebSocket 连接实现实时价格和信号更新
+
+**在 Web 界面中创建策略：**
+1. 点击持仓以展开
+2. 点击"+ 添加退出策略"或在 AI 聊天中输入
+3. 用 plain English 描述你的策略
+4. 查看 AI 的解读
+5. 确认激活
+
+**示例命令：**
+- "当 NVDA 达到 $800 时卖出一半"
+- "在 AAPL 上设置 10% 的跟踪止损"
+- "如果 TSLA 跌破 $300，全部卖出"
+- "将 NVDA 减仓至投资组合的 20%"
+
+#### Web 界面架构
+
+```
+web/
+├── src/
+│   ├── components/
+│   │   ├── PositionList.tsx    # 持仓显示，支持展开/折叠
+│   │   ├── AIChat.tsx          # 自然语言聊天界面
+│   │   ├── AlertPanel.tsx      # 信号和提醒
+│   │   └── Header.tsx          # 投资组合摘要标题
+│   ├── App.tsx                 # 主仪表板布局
+│   └── types.ts                # TypeScript 接口
+├── package.json
+└── vite.config.ts
+```
+
+后端 API 端点（FastAPI）：
+- `GET /api/portfolio` - 投资组合及持仓
+- `POST /api/strategies/parse` - 从自然语言预览策略
+- `POST /api/strategies` - 创建确认的策略
+- `GET /api/signals/pending` - 待审批的信号
+- `WS /ws` - 实时 WebSocket 更新
+
 ### Python API 使用
 
 程序化访问：
@@ -294,25 +449,40 @@ asyncio.run(main())
 traderclaw/
 ├── config/
 │   ├── .env                    # API密钥（git忽略）
-│   ├── market_data.yaml        # 数据源配置
-│   ├── brokers.yaml            # 券商设置
-│   └── ai_personality.yaml     # AI行为偏好
+│   ├── .env.example            # 环境文件示例
+│   ├── strategies.yaml         # 策略存储
+│   └── brokers.yaml            # 多账户券商设置
 ├── src/
 │   ├── ai/
-│   │   ├── llm_client.py       # Claude/Gemini/DeepSeek接口
-│   │   ├── strategy_memory.py  # 学习你的偏好
-│   │   ├── decision_engine.py  # 分析和决策
-│   │   └── prompt_templates.py # 上下文组装
+│   │   ├── llm_client.py       # DeepSeek/Gemini/Qwen接口
+│   │   ├── trading_orchestrator.py  # 主交易协调器
+│   │   └── models.py           # AI模型枚举和配置
+│   ├── strategies/
+│   │   ├── execution_engine.py # 自然语言策略引擎
+│   │   └── consensus.py        # 多模型共识
+│   ├── indicators/
+│   │   └── technical.py        # 技术指标计算
 │   ├── application/
 │   │   ├── interfaces/         # 抽象基类
-│   │   └── services/           # 核心业务逻辑
+│   │   │   ├── broker.py       # 券商接口
+│   │   │   └── market_data_source.py
+│   │   └── services/
+│   │       └── position_service.py  # 投资组合管理
 │   ├── infrastructure/
-│   │   ├── market_data/        # Polymarket, Yahoo等
-│   │   └── brokers/            # Alpaca, OKX
+│   │   ├── market_data/        # 数据客户端
+│   │   │   ├── yahoo_client.py
+│   │   │   ├── coingecko_client.py
+│   │   │   └── polymarket_client.py
+│   │   └── brokers/            # 券商实现
+│   │       ├── alpaca_broker.py
+│   │       ├── okx_broker.py
+│   │       └── broker_manager.py  # 多账户支持
 │   └── interfaces/
-│       └── cli.py              # 聊天式界面
-├── memory/                     # 对话历史
-├── logs/                       # 决策审计日志
+│       └── cli/
+│           ├── main.py         # 主CLI入口
+│           └── strategy_cli.py # 策略管理命令
+├── data/
+│   └── imported_positions/     # 保存的投资组合快照
 └── tests/
 ```
 
@@ -329,11 +499,21 @@ traderclaw/
 
 | 模型 | 优势 | 最适用于 |
 |------|------|----------|
-| **Claude** | 细致推理、安全 | 复杂策略解读 |
-| **Gemini** | 实时数据访问 | 新闻和情绪分析 |
-| **DeepSeek** | 性价比高、速度快 | 高频监控 |
+| **DeepSeek** | 性价比高、快速、推理能力强 | 主要策略分析 |
+| **Gemini** | 通过 Google 搜索访问实时数据 | 新闻和市场数据获取 |
+| **Qwen (DashScope)** | 快速、适合共识验证 | 多模型验证 |
 
-你可以组合使用多个模型 —— 例如用Claude做策略分析，用Gemini做新闻分析。
+**多模型共识**：TraderClaw 支持同时运行多个模型以获得更高置信度的决策。启用后，DeepSeek 和 Qwen 会同时分析策略，并综合它们的信号形成共识。
+
+你可以在 `.env` 中配置模型：
+```bash
+# 必需
+GEMINI_API_KEY=your_gemini_key
+
+# 用于策略执行（至少一个）
+DEEPSEEK_API_KEY=your_deepseek_key
+DASHSCOPE_API_KEY=your_qwen_key
+```
 
 ## 许可证
 

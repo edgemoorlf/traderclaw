@@ -195,6 +195,161 @@ uv run python -m src.interfaces.cli.main morning-briefing \
     --csv path/to/positions.csv
 ```
 
+---
+
+### Strategy Management (New)
+
+TraderClaw now supports **plain language strategies** that the AI interprets and executes. No coding required—just describe your trading philosophy in natural language.
+
+#### Create a Strategy
+
+```bash
+# Create a simple strategy
+uv run python -m src.interfaces.cli.main strategy create my_strategy \
+    --description "Buy tech stocks when RSI is oversold and sentiment is positive" \
+    --symbols AAPL MSFT NVDA \
+    --mode hybrid
+
+# Interactive mode (recommended for complex strategies)
+uv run python -m src.interfaces.cli.main strategy create my_strategy -i
+```
+
+**Approval Modes:**
+- `autonomous` - AI executes trades automatically within guardrails
+- `hybrid` - Auto-execute high-confidence signals, ask for approval on others
+- `approval` - Every trade requires your explicit approval
+- `notify` - AI suggests trades, you execute manually
+
+#### List and Manage Strategies
+
+```bash
+# List all strategies
+uv run python -m src.interfaces.cli.main strategy list
+
+# View strategy details
+uv run python -m src.interfaces.cli.main strategy show <strategy_id>
+
+# Delete a strategy
+uv run python -m src.interfaces.cli.main strategy delete <strategy_id>
+```
+
+#### Run a Strategy
+
+```bash
+# Dry run - generate signals without executing
+uv run python -m src.interfaces.cli.main strategy run <strategy_id> --dry-run
+
+# Run with specific account
+uv run python -m src.interfaces.cli.main strategy run <strategy_id> \
+    --account my_paper_account
+```
+
+#### Manage Broker Accounts
+
+```bash
+# List configured accounts
+uv run python -m src.interfaces.cli.main strategy accounts --list
+
+# Add a paper trading account
+uv run python -m src.interfaces.cli.main strategy accounts \
+    --add-paper my_paper_account \
+    --name "My Paper Trading"
+
+# Remove an account
+uv run python -m src.interfaces.cli.main strategy accounts --remove <account_id>
+```
+
+#### Example: Complete Strategy Workflow
+
+```bash
+# 1. Add a paper trading account
+uv run python -m src.interfaces.cli.main strategy accounts \
+    --add-paper tech_strategy_paper \
+    --name "Tech Strategy Paper Account"
+
+# 2. Create a strategy
+uv run python -m src.interfaces.cli.main strategy create tech_momentum \
+    --description "Buy oversold tech stocks (RSI < 30) with positive news sentiment. Position size: 5% per trade. Max 3 positions." \
+    --symbols AAPL MSFT NVDA GOOGL \
+    --mode hybrid \
+    --threshold 0.85 \
+    --max-positions 3
+
+# 3. Run the strategy (dry run first)
+uv run python -m src.interfaces.cli.main strategy run tech_momentum --dry-run
+
+# 4. Run live (paper trading)
+uv run python -m src.interfaces.cli.main strategy run tech_momentum \
+    --account tech_strategy_paper
+```
+
+---
+
+### Web UI (New)
+
+TraderClaw now includes a modern web interface for non-technical users. The Web UI provides a single-screen dashboard where you can manage positions, create strategies using natural language, and approve trading signals.
+
+#### Starting the Web UI
+
+```bash
+# 1. Install frontend dependencies
+cd web
+npm install
+
+# 2. Start the frontend dev server
+npm run dev
+
+# 3. In another terminal, start the backend API
+uv run python -m src.interfaces.web.main
+```
+
+Then open `http://localhost:3000` in your browser.
+
+#### Web UI Features
+
+**Single-Screen Dashboard:**
+- **Portfolio Overview** - Total value, daily changes, all positions
+- **Position Management** - Click any position to see details, P&L, and active strategies
+- **AI Chat Interface** - Type natural language commands like "Sell 50% of NVDA at $800"
+- **Signal Approval** - Review and approve trading signals inline
+- **Real-time Updates** - WebSocket connection for live price and signal updates
+
+**Creating Strategies in Web UI:**
+1. Click on a position to expand it
+2. Click "+ Add Exit Strategy" or type in the AI chat
+3. Describe your strategy in plain English
+4. Review the AI's interpretation
+5. Confirm to activate
+
+**Example Commands:**
+- "Sell half my NVDA when it hits $800"
+- "Set a trailing stop of 10% on AAPL"
+- "If TSLA drops below $300, sell everything"
+- "Trim NVDA to 20% of my portfolio"
+
+#### Web UI Architecture
+
+```
+web/
+├── src/
+│   ├── components/
+│   │   ├── PositionList.tsx    # Position display with expand/collapse
+│   │   ├── AIChat.tsx          # Natural language chat interface
+│   │   ├── AlertPanel.tsx      # Signals and alerts
+│   │   └── Header.tsx          # Portfolio summary header
+│   ├── App.tsx                 # Main dashboard layout
+│   └── types.ts                # TypeScript interfaces
+├── package.json
+└── vite.config.ts
+```
+
+Backend API endpoints (FastAPI):
+- `GET /api/portfolio` - Portfolio with positions
+- `POST /api/strategies/parse` - Preview strategy from natural language
+- `POST /api/strategies` - Create confirmed strategy
+- `GET /api/signals/pending` - Signals awaiting approval
+- `WS /ws` - Real-time WebSocket updates
+
 ### Python API Usage
 
 For programmatic access:
@@ -292,25 +447,40 @@ Confirm these changes? [Yes] [Adjust] [Cancel]
 traderclaw/
 ├── config/
 │   ├── .env                    # API keys (gitignored)
-│   ├── market_data.yaml        # Data source config
-│   ├── brokers.yaml            # Broker settings
-│   └── ai_personality.yaml     # AI behavior preferences
+│   ├── .env.example            # Example environment file
+│   ├── strategies.yaml         # Strategy storage
+│   └── brokers.yaml            # Multi-account broker settings
 ├── src/
 │   ├── ai/
-│   │   ├── llm_client.py       # Claude/Gemini/DeepSeek interface
-│   │   ├── strategy_memory.py  # Learns your preferences
-│   │   ├── decision_engine.py  # Analyzes and decides
-│   │   └── prompt_templates.py # Context assembly
+│   │   ├── llm_client.py       # DeepSeek/Gemini/Qwen interface
+│   │   ├── trading_orchestrator.py  # Main trading coordination
+│   │   └── models.py           # AI model enums and configs
+│   ├── strategies/
+│   │   ├── execution_engine.py # Plain language strategy engine
+│   │   └── consensus.py        # Multi-model consensus
+│   ├── indicators/
+│   │   └── technical.py        # Technical indicator calculations
 │   ├── application/
 │   │   ├── interfaces/         # Abstract base classes
-│   │   └── services/           # Core business logic
+│   │   │   ├── broker.py       # Broker interface
+│   │   │   └── market_data_source.py
+│   │   └── services/
+│   │       └── position_service.py  # Portfolio management
 │   ├── infrastructure/
-│   │   ├── market_data/        # Polymarket, Yahoo, etc.
-│   │   └── brokers/            # Alpaca, OKX
+│   │   ├── market_data/        # Data clients
+│   │   │   ├── yahoo_client.py
+│   │   │   ├── coingecko_client.py
+│   │   │   └── polymarket_client.py
+│   │   └── brokers/            # Broker implementations
+│   │       ├── alpaca_broker.py
+│   │       ├── okx_broker.py
+│   │       └── broker_manager.py  # Multi-account support
 │   └── interfaces/
-│       └── cli.py              # Chat-based interface
-├── memory/                     # Conversation history
-├── logs/                       # Decision audit trail
+│       └── cli/
+│           ├── main.py         # Main CLI entry point
+│           └── strategy_cli.py # Strategy management commands
+├── data/
+│   └── imported_positions/     # Saved portfolio snapshots
 └── tests/
 ```
 
@@ -327,11 +497,21 @@ traderclaw/
 
 | Model | Strengths | Best For |
 |-------|-----------|----------|
-| **Claude** | Nuanced reasoning, safety | Complex strategy interpretation |
-| **Gemini** | Real-time data access | News and sentiment analysis |
-| **DeepSeek** | Cost-effective, fast | High-frequency monitoring |
+| **DeepSeek** | Cost-effective, fast, strong reasoning | Primary strategy analysis |
+| **Gemini** | Real-time data access via Google Search | News and market data gathering |
+| **Qwen (DashScope)** | Fast, good for consensus | Multi-model validation |
 
-You can use multiple models - e.g., Claude for strategy, Gemini for news analysis.
+**Multi-Model Consensus**: TraderClaw supports running multiple models simultaneously for higher-confidence decisions. When enabled, DeepSeek and Qwen both analyze the strategy, and their signals are combined for consensus.
+
+You can configure models in your `.env`:
+```bash
+# Required
+GEMINI_API_KEY=your_gemini_key
+
+# For strategy execution (at least one)
+DEEPSEEK_API_KEY=your_deepseek_key
+DASHSCOPE_API_KEY=your_qwen_key
+```
 
 ## License
 

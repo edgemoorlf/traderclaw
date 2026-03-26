@@ -23,8 +23,13 @@ pycoingecko>=3.1.0
 requests>=2.31.0
 
 # Brokers
-alpaca-trade-api>=3.0.0
-alpaca-py>=0.13.0
+alpaca-py>=0.29.0
+
+# Web UI Backend
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+websockets>=13.0,<15.0
+python-multipart>=0.0.6
 
 # Configuration
 pydantic>=2.0.0
