@@ -3,7 +3,7 @@
 Provides REST API and WebSocket endpoints for the single-screen dashboard.
 """
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -32,7 +32,7 @@ app = FastAPI(title="TraderClaw Web UI", version="1.0.0")
 # CORS for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -117,7 +117,7 @@ class ChatMessage(BaseModel):
 
 
 # ============================================================================
-# Global State (simplified - use proper DB in production)
+# Global State
 # ============================================================================
 
 class AppState:
@@ -125,22 +125,46 @@ class AppState:
         self.position_service = PositionService()
         self.strategy_repo = StrategyRepository()
         self.broker_manager = get_broker_manager()
-        self.strategies: Dict[str, PlainLanguageStrategy] = {}
+        # Seed in-memory cache from DB so strategies survive restarts
+        self.strategies: Dict[str, PlainLanguageStrategy] = {
+            s.id: s for s in self.strategy_repo.load_all()
+        }
         self.signals: List[Signal] = []
         self.alerts: List[Alert] = []
         self.chat_history: List[ChatMessage] = []
         self.connected_websockets: List[WebSocket] = []
+        self._orchestrator = None
 
-    def get_portfolio(self) -> Portfolio:
+    def get_orchestrator(self):
+        if self._orchestrator is None:
+            import os
+            from dotenv import load_dotenv
+            load_dotenv("config/.env")
+            from src.ai.orchestrator import TradingOrchestrator
+            from src.ai.strategy_agents import StrategyModel
+            provider = os.getenv("STRATEGY_MODEL_PROVIDER", "deepseek").lower()
+            model_map = {
+                "deepseek": (StrategyModel.DEEPSEEK, os.getenv("DEEPSEEK_API_KEY")),
+                "claude": (StrategyModel.CLAUDE, os.getenv("ANTHROPIC_API_KEY")),
+                "qwen": (StrategyModel.QWEN, os.getenv("DASHSCOPE_API_KEY")),
+                "gpt": (StrategyModel.GPT, os.getenv("OPENAI_API_KEY")),
+            }
+            model, api_key = model_map.get(provider, model_map["deepseek"])
+            self._orchestrator = TradingOrchestrator(
+                gemini_api_key=os.getenv("GEMINI_API_KEY"),
+                strategy_model=model,
+                strategy_api_key=api_key,
+            )
+            # Share the same position_service so CSV data is available
+            self._orchestrator.position_service = self.position_service
+        return self._orchestrator
+
+    async def get_portfolio(self) -> Portfolio:
         """Get current portfolio state."""
-        # Try to get user context (includes demo data if no CSV loaded)
-        import asyncio
         try:
-            # Try to get existing CSV positions first
-            user_context = asyncio.run(self.position_service.get_user_context("default"))
-        except:
-            # Fall back to demo context
-            user_context = self.position_service._get_demo_context("default")
+            user_context = await self.position_service.get_user_context("default")
+        except ValueError:
+            user_context = None
 
         if not user_context or not user_context.get("positions"):
             # Return empty portfolio
@@ -221,77 +245,111 @@ state = AppState()
 @app.get("/api/portfolio", response_model=Portfolio)
 async def get_portfolio():
     """Get current portfolio with positions and strategies."""
-    return state.get_portfolio()
+    return await state.get_portfolio()
 
 
 @app.post("/api/portfolio/import", response_model=Portfolio)
 async def import_portfolio(file_path: str):
-    """Import portfolio from CSV file."""
+    """Import portfolio from CSV file path (server-side path)."""
     try:
-        positions_data = state.position_service.load_from_csv(file_path)
-        return state.get_portfolio()
+        state.position_service.load_from_csv(file_path)
+        return await state.get_portfolio()
+    except Exception as e:
+        raise HTTPException(400, f"Failed to import: {str(e)}")
+
+
+@app.post("/api/portfolio/upload", response_model=Portfolio)
+async def upload_portfolio(file: UploadFile = File(...)):
+    """Upload and import a Fidelity CSV file from the browser."""
+    import tempfile, os
+    if not file.filename or not file.filename.endswith(".csv"):
+        raise HTTPException(400, "Please upload a .csv file")
+    try:
+        contents = await file.read()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
+        state.position_service.load_from_csv(tmp_path)
+        os.unlink(tmp_path)
+        return await state.get_portfolio()
     except Exception as e:
         raise HTTPException(400, f"Failed to import: {str(e)}")
 
 
 @app.get("/api/positions/{symbol}/suggestions")
 async def get_position_suggestions(symbol: str):
-    """Get AI strategy suggestions for a specific position."""
-    portfolio = state.get_portfolio()
+    """Get AI-generated strategy suggestions for a specific position."""
+    portfolio = await state.get_portfolio()
     position = next((p for p in portfolio.positions if p.symbol == symbol), None)
 
     if not position:
         raise HTTPException(404, f"Position not found: {symbol}")
 
-    # Generate suggestions based on position state
-    suggestions = []
+    prompt = f"""You are a trading advisor. The user holds this position:
 
-    if position.unrealized_pnl_pct > 0.20:
+Symbol: {symbol}
+Shares: {position.quantity}
+Avg cost: ${position.avg_cost:.2f}
+Current price: ${position.current_price:.2f}
+Unrealized P&L: {position.unrealized_pnl_pct:+.1%} (${position.unrealized_pnl:.2f})
+Portfolio weight: {position.portfolio_weight:.1%}
+
+Suggest 3-4 concrete, actionable trading strategies for this position.
+Each suggestion should be something the user can immediately act on.
+
+Return JSON array:
+[
+  {{
+    "id": "short_snake_case_id",
+    "title": "Short title (emoji + 3-5 words)",
+    "description": "One sentence explaining why",
+    "actions": [
+      {{"label": "Button label", "template": "Natural language rule the user can save, e.g. Sell 50% of {symbol} when it reaches $X"}}
+    ]
+  }}
+]
+
+Return only valid JSON, no markdown."""
+
+    try:
+        orchestrator = state.get_orchestrator()
+        raw = await orchestrator.strategy_agent._call_llm(prompt)
+        import json as _json
+        data = _json.loads(orchestrator.strategy_agent._extract_json(raw))
+        return {"suggestions": data}
+    except Exception as e:
+        # Fallback to rule-based suggestions
+        suggestions = []
+        if position.unrealized_pnl_pct > 0.20:
+            suggestions.append({
+                "id": "take_profits",
+                "title": "🎯 Take Some Profits",
+                "description": f"You're up {position.unrealized_pnl_pct:.0%} — consider locking in gains",
+                "actions": [
+                    {"label": "Sell 50%", "template": f"Sell 50% of {symbol}"},
+                    {"label": "Set trailing stop", "template": f"Set 10% trailing stop on {symbol}"},
+                ],
+            })
+        if position.unrealized_pnl_pct < -0.10:
+            suggestions.append({
+                "id": "cut_losses",
+                "title": "🚨 Manage Downside",
+                "description": f"You're down {position.unrealized_pnl_pct:.0%}",
+                "actions": [
+                    {"label": "Set stop at -15%", "template": f"Sell {symbol} if it drops 15% from here"},
+                    {"label": "Average down", "template": f"Buy more {symbol} if it drops another 10%"},
+                ],
+            })
         suggestions.append({
-            "id": "take_profits",
-            "title": "🎯 Take Some Profits",
-            "description": f"You're up {position.unrealized_pnl_pct:.0%} - consider locking in gains",
+            "id": "protect_gains",
+            "title": "🛡️ Protect Position",
+            "description": "Set a stop loss to limit downside",
             "actions": [
-                {"label": "Sell 50%", "template": f"Sell 50% of {symbol}"},
-                {"label": "Set target at +50%", "template": f"Sell all {symbol} when it reaches ${position.avg_cost * 1.5:.0f}"},
-                {"label": "Set trailing stop", "template": f"Set 10% trailing stop on {symbol}"},
+                {"label": "10% trailing stop", "template": f"Set 10% trailing stop on {symbol}"},
+                {"label": "Fixed stop at -10%", "template": f"Sell {symbol} if it drops 10% from current price"},
             ],
         })
-
-    if position.portfolio_weight > 0.25:
-        suggestions.append({
-            "id": "concentration_risk",
-            "title": "⚠️ Concentration Risk",
-            "description": f"{symbol} is {position.portfolio_weight:.0%} of your portfolio",
-            "actions": [
-                {"label": "Trim to 20%", "template": f"Reduce {symbol} to 20% of portfolio"},
-                {"label": "Set rebalance rule", "template": f"If {symbol} exceeds 25% of portfolio, trim to 20%"},
-            ],
-        })
-
-    if position.unrealized_pnl_pct < -0.10:
-        suggestions.append({
-            "id": "cut_losses",
-            "title": "🚨 Cut Losses",
-            "description": f"You're down {position.unrealized_pnl_pct:.0%}",
-            "actions": [
-                {"label": "Set stop at -15%", "template": f"Sell {symbol} if it drops 15% from here"},
-                {"label": "Double down", "template": f"Buy more {symbol} if it drops 20% (average down)"},
-            ],
-        })
-
-    # Generic suggestions
-    suggestions.append({
-        "id": "protect_gains",
-        "title": "🛡️ Protect Your Position",
-        "description": "Set a stop loss to limit downside",
-        "actions": [
-            {"label": "10% trailing stop", "template": f"Set 10% trailing stop on {symbol}"},
-            {"label": "Fixed stop at -10%", "template": f"Sell {symbol} if it drops 10% from current price"},
-        ],
-    })
-
-    return {"suggestions": suggestions}
+        return {"suggestions": suggestions}
 
 
 @app.post("/api/strategies/parse", response_model=StrategyPreview)
@@ -300,67 +358,58 @@ async def parse_strategy(input: StrategyInput):
     Parse natural language strategy and return interpretation.
     This is the first step - user sees preview before saving.
     """
-    portfolio = state.get_portfolio()
+    portfolio = await state.get_portfolio()
 
-    # Build context-aware prompt
-    context = ""
+    position = None
     if input.symbol:
         position = next((p for p in portfolio.positions if p.symbol == input.symbol), None)
-        if position:
-            context = f"""
-            The user owns {position.quantity} shares of {position.symbol}
-            at an average cost of ${position.avg_cost:.2f}.
-            Current price is ${position.current_price:.2f}.
-            They are {'up' if position.unrealized_pnl > 0 else 'down'} {abs(position.unrealized_pnl_pct):.1%}.
-            """
 
-    # Parse using LLM
-    prompt = f"""
-    {context}
+    context = ""
+    if position:
+        context = (
+            f"The user owns {position.quantity} shares of {position.symbol} "
+            f"at an average cost of ${position.avg_cost:.2f}. "
+            f"Current price is ${position.current_price:.2f}. "
+            f"They are {'up' if position.unrealized_pnl > 0 else 'down'} {abs(position.unrealized_pnl_pct):.1%}."
+        )
 
-    The user wants to create a trading strategy: "{input.description}"
+    prompt = f"""{context}
 
-    Parse this into:
-    1. A clear title (5 words max)
-    2. Specific rules with exact prices/percentages
-    3. Any ambiguous terms that need clarification
-    4. Expected impact on their position
+The user wants to create a trading strategy: "{input.description}"
 
-    Return JSON with:
-    - title: string
-    - interpretation: human-readable explanation
-    - ambiguities: list of {term, options, default} objects
-    - impact: {shares_involved, estimated_proceeds, concentration_change}
-    - readable_rules: list of bullet points
-    - confidence: 0-100 score
-    """
+Parse this into a JSON object with these exact fields:
+- title: string (5 words max)
+- interpretation: string (human-readable explanation of what will happen)
+- ambiguities: list of objects with {{term, options, default}} for any unclear terms
+- impact: object with {{shares_involved, estimated_proceeds, concentration_change}}
+- readable_rules: list of bullet point strings
+- confidence: integer 0-100
 
-    # Mock response for now - integrate with actual LLM
-    preview = StrategyPreview(
-        title="Profit Taking Strategy",
-        interpretation=f"Sell 50% of {input.symbol} when it reaches $800",
-        ambiguities=[
-            {
-                "term": "high price",
-                "options": ["$800", "$850", "$900"],
-                "default": "$800",
-                "context": f"Current price is ${position.current_price if input.symbol else 0:.2f}",
-            }
-        ] if input.symbol else [],
-        impact={
-            "shares_to_sell": 40,
-            "estimated_proceeds": 32000,
-            "remaining_shares": 40,
-            "concentration_before": "33%",
-            "concentration_after": "16%",
-        },
-        confidence=85,
-        readable_rules=[
-            f"WHEN {input.symbol} reaches $800",
-            f"SELL 40 shares (50% of position)",
-            "SET trailing stop at 10% for remaining",
-        ],
-    )
+Return only valid JSON, no markdown."""
+
+    try:
+        orchestrator = state.get_orchestrator()
+        agent = orchestrator.strategy_agent
+        raw_text = await agent._call_llm(prompt)
+        import json as _json
+        data = _json.loads(agent._extract_json(raw_text))
+        preview = StrategyPreview(
+            title=data.get("title", "Custom Strategy"),
+            interpretation=data.get("interpretation", input.description),
+            ambiguities=data.get("ambiguities", []),
+            impact=data.get("impact", {}),
+            confidence=data.get("confidence", 70),
+            readable_rules=data.get("readable_rules", [input.description]),
+        )
+    except Exception as e:
+        preview = StrategyPreview(
+            title="Custom Strategy",
+            interpretation=input.description,
+            ambiguities=[],
+            impact={},
+            confidence=50,
+            readable_rules=[input.description],
+        )
 
     return preview
 
@@ -370,11 +419,15 @@ async def create_strategy(request: StrategyCreateRequest):
     """
     Create a strategy after user confirmation.
     """
-    # In real implementation, save to database
     strategy_id = f"strat_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     # Create strategy object
     symbols = [request.symbol] if request.symbol else []
+
+    try:
+        approval_mode = ApprovalMode(request.approval_mode)
+    except ValueError:
+        raise HTTPException(422, f"Invalid approval_mode: {request.approval_mode!r}")
 
     strategy = PlainLanguageStrategy(
         id=strategy_id,
@@ -382,7 +435,7 @@ async def create_strategy(request: StrategyCreateRequest):
         description=request.description,
         symbols=symbols,
         timeframe="1d",
-        approval_mode=ApprovalMode(request.approval_mode),
+        approval_mode=approval_mode,
     )
 
     state.strategies[strategy_id] = strategy
@@ -457,26 +510,31 @@ async def chat(message: str):
         timestamp=datetime.now(),
     ))
 
-    # Parse intent and generate response
-    # This is where we'd use LLM to understand the request
-
-    response_actions = []
-
-    # Simple keyword matching for demo
-    if "nvda" in message.lower() and "sell" in message.lower():
-        response_actions = [
-            {"type": "action", "label": "Sell 50% of NVDA", "endpoint": "/api/trade", "params": {"symbol": "NVDA", "percentage": 0.5}},
-            {"type": "action", "label": "Set sell target at $800", "endpoint": "/api/strategies", "params": {"symbol": "NVDA", "target": 800}},
-        ]
-    elif "strategy" in message.lower():
-        response_actions = [
-            {"type": "navigate", "label": "View My Strategies", "path": "/strategies"},
-            {"type": "action", "label": "Create New Strategy", "endpoint": "/api/strategies/parse"},
-        ]
+    try:
+        orchestrator = state.get_orchestrator()
+        advice = await orchestrator.advise(user_id="default", query=message)
+        response_text = advice.decision.rationale
+        response_actions = []
+        rec = advice.decision.recommendation.upper()
+        symbol = advice.decision.symbol
+        if rec in ("BUY", "SELL") and symbol and symbol != "UNKNOWN":
+            response_actions.append({
+                "type": "action",
+                "label": f"{rec} {symbol}",
+                "endpoint": "/api/trade",
+                "params": {"symbol": symbol, "action": rec},
+            })
+    except ValueError as e:
+        # No CSV loaded
+        response_text = str(e)
+        response_actions = []
+    except Exception as e:
+        response_text = f"Analysis failed: {e}"
+        response_actions = []
 
     response = ChatMessage(
         role="assistant",
-        content=f"I understand: '{message}'. What would you like to do?",
+        content=response_text,
         timestamp=datetime.now(),
         actions=response_actions,
     )
@@ -500,7 +558,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         # Send initial portfolio state
-        portfolio = state.get_portfolio()
+        portfolio = await state.get_portfolio()
         await websocket.send_json({
             "type": "portfolio_update",
             "data": portfolio.model_dump(),

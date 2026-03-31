@@ -54,14 +54,17 @@ htmlcov/
 *.sqlite3
 data/
 backups/
+config/strategies/
 
 # Keep example files
 !config/.env.example
 *.csv
 
 CLAUDE.md
+PLAN.md
 
 # Claude Code
 .claude/
 
 node_modules/
+.vite

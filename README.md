@@ -448,41 +448,48 @@ traderclaw/
 ├── config/
 │   ├── .env                    # API keys (gitignored)
 │   ├── .env.example            # Example environment file
-│   ├── strategies.yaml         # Strategy storage
 │   └── brokers.yaml            # Multi-account broker settings
+├── data/
+│   └── traderclaw.db           # SQLite database — strategies and runtime data (gitignored)
 ├── src/
 │   ├── ai/
-│   │   ├── llm_client.py       # DeepSeek/Gemini/Qwen interface
-│   │   ├── trading_orchestrator.py  # Main trading coordination
-│   │   └── models.py           # AI model enums and configs
+│   │   ├── gemini_data_agent.py     # Gemini + Google Search for market data
+│   │   ├── orchestrator.py          # Main trading coordination pipeline
+│   │   └── strategy_agents.py       # DeepSeek / Claude / Qwen / GPT agents
 │   ├── strategies/
-│   │   ├── execution_engine.py # Plain language strategy engine
-│   │   └── consensus.py        # Multi-model consensus
+│   │   └── execution_engine.py      # Plain language strategy engine + consensus
 │   ├── indicators/
-│   │   └── technical.py        # Technical indicator calculations
+│   │   └── technical.py             # RSI, SMA, MACD, Bollinger Bands, etc.
 │   ├── application/
-│   │   ├── interfaces/         # Abstract base classes
-│   │   │   ├── broker.py       # Broker interface
-│   │   │   └── market_data_source.py
-│   │   └── services/
-│   │       └── position_service.py  # Portfolio management
+│   │   └── interfaces/
+│   │       ├── broker.py            # Abstract broker interface
+│   │       └── market_data_source.py
 │   ├── infrastructure/
-│   │   ├── market_data/        # Data clients
-│   │   │   ├── yahoo_client.py
-│   │   │   ├── coingecko_client.py
-│   │   │   └── polymarket_client.py
-│   │   └── brokers/            # Broker implementations
-│   │       ├── alpaca_broker.py
-│   │       ├── okx_broker.py
-│   │       └── broker_manager.py  # Multi-account support
+│   │   ├── database.py              # SQLite persistence layer
+│   │   ├── csv_importers.py         # Fidelity CSV import
+│   │   ├── market_data/
+│   │   │   └── polymarket_client.py # Polymarket Gamma API client
+│   │   └── brokers/
+│   │       ├── alpaca_broker.py     # Alpaca US stocks
+│   │       ├── okx_broker.py        # OKX crypto
+│   │       └── broker_manager.py    # Multi-account support
 │   └── interfaces/
-│       └── cli/
-│           ├── main.py         # Main CLI entry point
-│           └── strategy_cli.py # Strategy management commands
-├── data/
-│   └── imported_positions/     # Saved portfolio snapshots
+│       ├── cli/
+│       │   ├── main.py              # Main CLI entry point
+│       │   └── strategy_cli.py      # Strategy management commands
+│       └── web/
+│           └── main.py              # FastAPI backend (REST + WebSocket)
+├── web/                             # React + Vite frontend
+│   └── src/
+│       ├── components/
+│       │   ├── PositionList.tsx     # Portfolio positions with CSV upload
+│       │   ├── AIChat.tsx           # Natural language chat + strategy creation
+│       │   ├── AlertPanel.tsx       # Signals and approval panel
+│       │   └── Header.tsx           # Portfolio summary header
+│       ├── App.tsx                  # Main dashboard layout
+│       ├── api.ts                   # API/WebSocket base URLs
+│       └── types.ts                 # TypeScript interfaces
 └── tests/
-```
 
 ## Safety & Guardrails
 

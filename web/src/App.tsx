@@ -4,16 +4,14 @@ import { AIChat } from './components/AIChat'
 import { AlertPanel } from './components/AlertPanel'
 import { Header } from './components/Header'
 import type { Portfolio, Alert, Signal, Position } from './types'
+import { API_BASE, WS_BASE } from './api'
 import './App.css'
-
-const API_BASE = 'http://localhost:8000/api'
 
 function App() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [signals, setSignals] = useState<Signal[]>([])
   const [selectedPosition, setSelectedPosition] = useState<Position | null>(null)
-  const [ws, setWs] = useState<WebSocket | null>(null)
   const [isConnected, setIsConnected] = useState(false)
 
   // Fetch portfolio data
@@ -45,7 +43,7 @@ function App() {
 
   // WebSocket connection
   useEffect(() => {
-    const websocket = new WebSocket('ws://localhost:8000/ws')
+    const websocket = new WebSocket(WS_BASE)
 
     websocket.onopen = () => {
       setIsConnected(true)
@@ -65,8 +63,6 @@ function App() {
       setIsConnected(false)
       console.log('WebSocket disconnected')
     }
-
-    setWs(websocket)
 
     return () => {
       websocket.close()

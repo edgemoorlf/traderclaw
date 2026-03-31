@@ -5,9 +5,8 @@ combining Gemini for data gathering and pluggable LLMs for strategy analysis.
 """
 
 import logging
-import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional, Any
 
@@ -91,7 +90,7 @@ class PositionService:
             "total_cost_basis": float(total_cost),
             "unrealized_pnl_pct": float((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0,
             "positions": positions,
-            "imported_at": datetime.utcnow().isoformat(),
+            "imported_at": datetime.now(timezone.utc).isoformat(),
         }
         self._csv_path = csv_path
 
@@ -100,61 +99,30 @@ class PositionService:
 
     async def get_user_context(self, user_id: str) -> Dict[str, Any]:
         """
-        Get user's portfolio context.
-
-        Priority:
-        1. CSV import if loaded
-        2. Hardcoded demo data (for testing)
+        Get user's portfolio context from loaded CSV import.
 
         Args:
             user_id: User identifier
 
         Returns:
             Dictionary with positions, strategy, preferences
+
+        Raises:
+            ValueError: If no CSV has been loaded yet
         """
-        # Return CSV positions if available
-        if self._csv_positions:
-            return {
-                **self._csv_positions,
-                "user_id": user_id,
-                "risk_tolerance": "moderate",
-                "strategy_description": "Growth with volatility harvesting",
-                "target_profit_pct": 20,
-                "stop_loss_pct": 10,
-                "max_position_pct": 15,
-            }
+        if not self._csv_positions:
+            raise ValueError(
+                "No portfolio loaded. Please import your Fidelity CSV first using load_from_csv()."
+            )
 
-        # Fall back to demo data
-        return self._get_demo_context(user_id)
-
-    def _get_demo_context(self, user_id: str) -> Dict[str, Any]:
-        """Demo portfolio for testing."""
         return {
+            **self._csv_positions,
             "user_id": user_id,
-            "source": "demo",
-            "total_portfolio_value": 150000.00,
-            "cash_available": 45000.00,
             "risk_tolerance": "moderate",
             "strategy_description": "Growth with volatility harvesting",
             "target_profit_pct": 20,
             "stop_loss_pct": 10,
             "max_position_pct": 15,
-            "positions": {
-                "AAPL": {
-                    "quantity": 100,
-                    "avg_entry_price": 150.00,
-                    "current_price": 185.50,
-                    "market_value": 18550.00,
-                    "unrealized_pnl_pct": 23.7,
-                },
-                "BTC": {
-                    "quantity": 0.5,
-                    "avg_entry_price": 40000.00,
-                    "current_price": 67890.00,
-                    "market_value": 33945.00,
-                    "unrealized_pnl_pct": 69.7,
-                }
-            }
         }
 
     def get_position_symbols(self) -> List[str]:
@@ -247,7 +215,7 @@ class TradingOrchestrator:
             TradingAdvice with complete analysis and recommendation
         """
         logger.info(f"Processing query for user {user_id}: {query}")
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
 
         # Step 1: Identify symbols from query if not provided
         if not symbols:
@@ -255,18 +223,31 @@ class TradingOrchestrator:
             logger.info(f"Extracted symbols: {symbols}")
 
         if not symbols:
-            # Return error advice
-            return self._create_error_advice(
-                query, "No symbols found in query. Please specify tickers like AAPL, BTC, etc."
-            )
+            # Fall back to all portfolio symbols
+            try:
+                user_context = await self.position_service.get_user_context(user_id)
+                symbols = list(user_context.get("positions", {}).keys())
+            except Exception:
+                symbols = []
 
         # Step 2: Fetch fresh market data via Gemini + Google Search
-        logger.info(f"🔍 Gathering market data for: {symbols}")
-        try:
-            market_data = await self.data_agent.gather_market_data(symbols)
-        except Exception as e:
-            logger.error(f"Failed to gather market data: {e}")
-            return self._create_error_advice(query, f"Data gathering failed: {e}")
+        if symbols:
+            logger.info(f"🔍 Gathering market data for: {symbols}")
+            try:
+                market_data = await self.data_agent.gather_market_data(symbols)
+            except Exception as e:
+                logger.error(f"Failed to gather market data: {e}")
+                return self._create_error_advice(query, f"Data gathering failed: {e}")
+        else:
+            from .gemini_data_agent import MarketDataPackage
+            market_data = MarketDataPackage(
+                timestamp=datetime.now(timezone.utc),
+                market_summary="No specific symbols requested.",
+                symbols={},
+                macro=None,
+                polymarket_signals=[],
+                data_sources=[],
+            )
 
         # Step 3: Also get Polymarket signals if relevant
         polymarket_topics = self._extract_polymarket_topics(query, symbols)
@@ -292,6 +273,8 @@ class TradingOrchestrator:
         logger.info(f"📈 Fetching portfolio context for user {user_id}...")
         try:
             user_context = await self.position_service.get_user_context(user_id)
+        except ValueError:
+            user_context = {"positions": {}, "note": "No portfolio loaded."}
         except Exception as e:
             logger.error(f"Failed to fetch user context: {e}")
             return self._create_error_advice(query, f"Portfolio fetch failed: {e}")
@@ -309,12 +292,12 @@ class TradingOrchestrator:
             return self._create_error_advice(query, f"Analysis failed: {e}")
 
         # Calculate processing time
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
+        processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         logger.info(f"Advice generated in {processing_time:.2f}s: {decision.recommendation}")
 
         # Step 7: Return complete advice package
         return TradingAdvice(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             user_query=query,
             market_data=market_data,
             decision=decision,
@@ -337,11 +320,17 @@ class TradingOrchestrator:
             'A', 'I', 'US', 'USD', 'ETF', 'IPO', 'CEO', 'CFO', 'EPS', 'GDP',
             'FED', 'IRS', 'SEC', 'NYSE', 'NASDAQ', 'THE', 'AND', 'FOR',
             'BUY', 'SELL', 'HOLD', 'MY', 'ME', 'IT', 'IS', 'AT', 'BE',
+            'ANY', 'ON', 'IN', 'OF', 'TO', 'DO', 'CAN', 'YOU', 'ALL',
+            'WHAT', 'HOW', 'WHY', 'WHEN', 'WHERE', 'WHICH', 'WHO',
+            'POSITIONS', 'POSITION', 'PORTFOLIO', 'STOCKS', 'STOCK',
+            'SUGGESTIONS', 'SUGGESTION', 'ADVICE', 'ANALYSIS', 'MARKET',
+            'TRADING', 'TRADE', 'PRICE', 'SHOULD', 'WOULD', 'COULD',
         }
 
-        # Match 1-5 uppercase letters (standard ticker format)
+        # Only match explicit tickers: 1-5 uppercase letters in the original query
+        # (not uppercased query, to avoid treating normal words as tickers)
         import re
-        tickers = re.findall(r'\b[A-Z]{1,5}\b', query.upper())
+        tickers = re.findall(r'\b[A-Z]{1,5}\b', query)
 
         # Filter out common words
         tickers = [t for t in tickers if t not in common_words]
@@ -428,13 +417,13 @@ class TradingOrchestrator:
 
     def _create_error_advice(self, query: str, error: str) -> TradingAdvice:
         """Create error TradingAdvice."""
-        from .gemini_data_agent import MarketDataPackage, SymbolData
+        from .gemini_data_agent import MarketDataPackage
 
         return TradingAdvice(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             user_query=query,
             market_data=MarketDataPackage(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 market_summary=f"Error: {error}",
                 symbols={},
                 macro=None,

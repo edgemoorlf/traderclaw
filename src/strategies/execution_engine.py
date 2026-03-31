@@ -146,110 +146,7 @@ class ExecutionPlan:
     notes: List[str]
 
 
-class StrategyRepository:
-    """Repository for storing and loading plain language strategies."""
-
-    def __init__(self, config_dir: str = "config/strategies"):
-        self.config_dir = Path(config_dir)
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-        self._strategies: Dict[str, PlainLanguageStrategy] = {}
-
-    def save(self, strategy: PlainLanguageStrategy) -> None:
-        """Save a strategy to file."""
-        filepath = self.config_dir / f"{strategy.id}.yaml"
-
-        data = {
-            "id": strategy.id,
-            "name": strategy.name,
-            "description": strategy.description,
-            "symbols": strategy.symbols,
-            "timeframe": strategy.timeframe,
-            "position_sizing": strategy.position_sizing,
-            "max_positions": strategy.max_positions,
-            "stop_loss_rule": strategy.stop_loss_rule,
-            "take_profit_rule": strategy.take_profit_rule,
-            "approval_mode": strategy.approval_mode.value,
-            "auto_execute_confidence_threshold": strategy.auto_execute_confidence_threshold,
-            "use_consensus": strategy.use_consensus,
-            "consensus_type": strategy.consensus_type.value,
-            "consensus_models": [m.value for m in strategy.consensus_models],
-            "model_weights": strategy.model_weights,
-            "indicators": strategy.indicators,
-            "enabled": strategy.enabled,
-            "tags": strategy.tags,
-            "created_at": strategy.created_at.isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
-        }
-
-        with open(filepath, 'w') as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-
-        self._strategies[strategy.id] = strategy
-        logger.info(f"Saved strategy: {strategy.id}")
-
-    def load(self, strategy_id: str) -> Optional[PlainLanguageStrategy]:
-        """Load a strategy from file."""
-        if strategy_id in self._strategies:
-            return self._strategies[strategy_id]
-
-        filepath = self.config_dir / f"{strategy_id}.yaml"
-        if not filepath.exists():
-            return None
-
-        with open(filepath) as f:
-            data = yaml.safe_load(f)
-
-        strategy = self._from_dict(data)
-        self._strategies[strategy_id] = strategy
-        return strategy
-
-    def load_all(self) -> List[PlainLanguageStrategy]:
-        """Load all strategies."""
-        strategies = []
-        for filepath in self.config_dir.glob("*.yaml"):
-            strategy_id = filepath.stem
-            strategy = self.load(strategy_id)
-            if strategy:
-                strategies.append(strategy)
-        return strategies
-
-    def delete(self, strategy_id: str) -> bool:
-        """Delete a strategy."""
-        filepath = self.config_dir / f"{strategy_id}.yaml"
-        if filepath.exists():
-            filepath.unlink()
-            self._strategies.pop(strategy_id, None)
-            return True
-        return False
-
-    def _from_dict(self, data: Dict) -> PlainLanguageStrategy:
-        """Create strategy from dictionary."""
-        return PlainLanguageStrategy(
-            id=data["id"],
-            name=data["name"],
-            description=data["description"],
-            symbols=data["symbols"],
-            timeframe=data["timeframe"],
-            position_sizing=data.get("position_sizing", "equal weight"),
-            max_positions=data.get("max_positions", 5),
-            stop_loss_rule=data.get("stop_loss_rule"),
-            take_profit_rule=data.get("take_profit_rule"),
-            approval_mode=ApprovalMode(data.get("approval_mode", "hybrid")),
-            auto_execute_confidence_threshold=data.get(
-                "auto_execute_confidence_threshold", 0.8
-            ),
-            use_consensus=data.get("use_consensus", True),
-            consensus_type=ConsensusType(data.get("consensus_type", "weighted")),
-            consensus_models=[
-                StrategyModel(m) for m in data.get("consensus_models", ["deepseek", "qwen"])
-            ],
-            model_weights=data.get("model_weights", {"deepseek": 0.6, "qwen": 0.4}),
-            indicators=data.get("indicators", ["price", "rsi_14"]),
-            enabled=data.get("enabled", True),
-            tags=data.get("tags", []),
-            created_at=datetime.fromisoformat(data["created_at"]),
-            updated_at=datetime.fromisoformat(data["updated_at"]),
-        )
+from ..infrastructure.database import StrategyRepository  # noqa: E402
 
 
 class ConsensusEngine:
@@ -452,7 +349,7 @@ class StrategyExecutionEngine:
         self,
         gemini_api_key: str,
         model_api_keys: Dict[str, str],
-        config_dir: str = "config/strategies"
+        db_path: str = "data/traderclaw.db"
     ):
         """
         Initialize execution engine.
@@ -460,11 +357,11 @@ class StrategyExecutionEngine:
         Args:
             gemini_api_key: API key for Gemini data agent
             model_api_keys: Dict of model name -> API key for consensus
-            config_dir: Directory for strategy configs
+            db_path: Path to SQLite database file
         """
         self.data_agent = GeminiDataAgent(gemini_api_key)
         self.indicator_calc = get_indicator_calculator()
-        self.repository = StrategyRepository(config_dir)
+        self.repository = StrategyRepository(db_path)
         self.consensus_engine = ConsensusEngine(model_api_keys)
         self.broker_manager = get_broker_manager()
 
@@ -827,7 +724,7 @@ _execution_engine: Optional[StrategyExecutionEngine] = None
 def get_execution_engine(
     gemini_api_key: Optional[str] = None,
     model_api_keys: Optional[Dict[str, str]] = None,
-    config_dir: str = "config/strategies"
+    db_path: str = "data/traderclaw.db"
 ) -> StrategyExecutionEngine:
     """Get or create singleton execution engine."""
     global _execution_engine
@@ -839,7 +736,7 @@ def get_execution_engine(
         _execution_engine = StrategyExecutionEngine(
             gemini_api_key=gemini_api_key,
             model_api_keys=model_api_keys or {},
-            config_dir=config_dir
+            db_path=db_path
         )
 
     return _execution_engine

@@ -130,7 +130,8 @@ IMPORTANT:
 - Consider both technical and fundamental factors
 - Account for the user's stated strategy and risk tolerance
 - Partial selling is often optimal for winning positions
-- Always consider upcoming events (earnings, Fed, etc.)"""
+- Always consider upcoming events (earnings, Fed, etc.)
+- Respond in the same language as the user's question (e.g. if the question is in Chinese, write the rationale in Chinese)"""
 
     def _parse_decision(self, text: str, default_symbol: str = "") -> TradingDecision:
         """Parse structured JSON decision from model output."""
@@ -165,6 +166,10 @@ IMPORTANT:
                 risks=["Parse error - manual review needed"],
                 timeframe="immediate",
             )
+
+    async def _call_llm(self, prompt: str) -> str:
+        """Call the underlying LLM with a raw prompt and return the text response."""
+        raise NotImplementedError
 
     def _extract_json(self, text: str) -> str:
         """Extract JSON from text that might contain markdown or extra content."""
@@ -206,6 +211,33 @@ class DeepSeekStrategyAgent(StrategyAgent):
         super().__init__(api_key, model)
         self.base_url = "https://api.deepseek.com"
 
+    async def _call_llm(self, prompt: str) -> str:
+        """Call DeepSeek with a raw prompt."""
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "You are an expert trading strategist. Always output valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.2,
+                "max_tokens": 2000,
+            }
+            async with session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(f"DeepSeek API error: {response.status} - {error_text}")
+                result = await response.json()
+                return result["choices"][0]["message"]["content"]
+
     async def analyze(
         self,
         market_data: Dict[str, Any],
@@ -214,54 +246,17 @@ class DeepSeekStrategyAgent(StrategyAgent):
     ) -> TradingDecision:
         """Analyze with DeepSeek."""
         logger.info("Analyzing with DeepSeek...")
-
-        prompt = self._format_prompt(market_data, user_context, query)
-
-        # Extract symbol from query or context
         symbol = self._extract_symbol(query, user_context)
-
         try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                }
-
-                payload = {
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": "You are an expert trading strategist. Always output valid JSON."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 2000,
-                }
-
-                async with session.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=headers,
-                    json=payload
-                ) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise RuntimeError(f"DeepSeek API error: {response.status} - {error_text}")
-
-                    result = await response.json()
-                    content = result["choices"][0]["message"]["content"]
-
-                    return self._parse_decision(content, symbol)
-
+            content = await self._call_llm(self._format_prompt(market_data, user_context, query))
+            return self._parse_decision(content, symbol)
         except Exception as e:
             logger.error(f"DeepSeek analysis failed: {e}")
             return TradingDecision(
-                recommendation="HOLD",
-                symbol=symbol,
-                quantity=None,
-                quantity_type="shares",
-                confidence="low",
+                recommendation="HOLD", symbol=symbol, quantity=None,
+                quantity_type="shares", confidence="low",
                 rationale=f"Analysis failed: {e}",
-                risks=["API error - manual review needed"],
-                timeframe="immediate",
+                risks=["API error - manual review needed"], timeframe="immediate",
             )
 
     def _extract_symbol(self, query: str, context: Dict) -> str:
@@ -334,7 +329,9 @@ Provide your recommendation as JSON:
   "timeframe": "immediate|today|this_week",
   "target_price": null or number,
   "stop_loss": null or number
-}}"""
+}}
+
+Respond in the same language as the user's question."""""
 
         try:
             response = self.client.messages.create(
@@ -343,13 +340,21 @@ Provide your recommendation as JSON:
                 temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]
             )
-
             content = response.content[0].text
             return self._parse_decision(content, symbol)
-
         except Exception as e:
             logger.error(f"Claude analysis failed: {e}")
             return self._error_decision(symbol, str(e))
+
+    async def _call_llm(self, prompt: str) -> str:
+        """Call Claude with a raw prompt."""
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=2000,
+            temperature=0.1,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text
 
     def _extract_symbol(self, query: str, context: Dict) -> str:
         """Extract symbol from query or context."""
@@ -400,57 +405,46 @@ class QwenStrategyAgent(StrategyAgent):
     ) -> TradingDecision:
         """Analyze with Qwen via DashScope."""
         logger.info("Analyzing with Qwen...")
-
         symbol = self._extract_symbol(query, user_context)
-        prompt = self._format_prompt(market_data, user_context, query)
-
         try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                }
-
-                payload = {
-                    "model": self.model,
-                    "input": {
-                        "messages": [
-                            {"role": "system", "content": "You are a trading strategist. Output valid JSON only."},
-                            {"role": "user", "content": prompt}
-                        ]
-                    },
-                    "parameters": {
-                        "temperature": 0.2,
-                        "max_tokens": 2000,
-                    }
-                }
-
-                async with session.post(
-                    f"{self.base_url}/services/aigc/text-generation/generation",
-                    headers=headers,
-                    json=payload
-                ) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise RuntimeError(f"Qwen API error: {response.status} - {error_text}")
-
-                    result = await response.json()
-                    content = result["output"]["text"]
-
-                    return self._parse_decision(content, symbol)
-
+            content = await self._call_llm(self._format_prompt(market_data, user_context, query))
+            return self._parse_decision(content, symbol)
         except Exception as e:
             logger.error(f"Qwen analysis failed: {e}")
             return TradingDecision(
-                recommendation="HOLD",
-                symbol=symbol,
-                quantity=None,
-                quantity_type="shares",
-                confidence="low",
+                recommendation="HOLD", symbol=symbol, quantity=None,
+                quantity_type="shares", confidence="low",
                 rationale=f"Qwen analysis failed: {e}",
-                risks=["API error - manual review needed"],
-                timeframe="immediate",
+                risks=["API error - manual review needed"], timeframe="immediate",
             )
+
+    async def _call_llm(self, prompt: str) -> str:
+        """Call Qwen with a raw prompt."""
+        async with aiohttp.ClientSession() as session:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": self.model,
+                "input": {
+                    "messages": [
+                        {"role": "system", "content": "You are a trading strategist. Output valid JSON only."},
+                        {"role": "user", "content": prompt}
+                    ]
+                },
+                "parameters": {"temperature": 0.2, "max_tokens": 2000},
+            }
+            async with session.post(
+                f"{self.base_url}/services/aigc/text-generation/generation",
+                headers=headers,
+                json=payload
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(f"Qwen API error: {response.status} - {error_text}")
+                result = await response.json()
+                return result["output"]["text"]
 
     def _extract_symbol(self, query: str, context: Dict) -> str:
         """Extract symbol from query or context."""

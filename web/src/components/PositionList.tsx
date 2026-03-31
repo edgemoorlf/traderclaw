@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import type { Position, Portfolio } from '../types'
+import { API_BASE } from '../api'
 
 interface PositionListProps {
   portfolio: Portfolio | null
@@ -8,10 +9,43 @@ interface PositionListProps {
   onUpdate: () => void
 }
 
-export function PositionList({ portfolio, selectedPosition, onSelectPosition, onUpdate }: PositionListProps) {
+export function PositionList({ portfolio, onSelectPosition, onUpdate }: PositionListProps) {
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null)
   const [strategyInput, setStrategyInput] = useState('')
   const [isCreatingStrategy, setIsCreatingStrategy] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setIsUploading(true)
+    setUploadError(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch(`${API_BASE}/portfolio/upload`, {
+        method: 'POST',
+        body: formData,
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Upload failed')
+      }
+      onUpdate()
+    } catch (err: any) {
+      setUploadError(err.message)
+    } finally {
+      setIsUploading(false)
+      // Reset so the same file can be re-uploaded if needed
+      e.target.value = ''
+    }
+  }
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -40,7 +74,7 @@ export function PositionList({ portfolio, selectedPosition, onSelectPosition, on
     if (!strategyInput.trim()) return
 
     try {
-      const res = await fetch('http://localhost:8000/api/strategies', {
+      const res = await fetch(`${API_BASE}/strategies`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -62,7 +96,7 @@ export function PositionList({ portfolio, selectedPosition, onSelectPosition, on
 
   const handleQuickAction = async (symbol: string, action: string) => {
     try {
-      const res = await fetch('http://localhost:8000/api/chat', {
+      const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: `${action} ${symbol}` }),
@@ -83,12 +117,23 @@ export function PositionList({ portfolio, selectedPosition, onSelectPosition, on
         <div className="text-center py-8 text-trader-muted">
           <div className="text-4xl mb-3">📂</div>
           <p>No positions imported yet.</p>
-          <p className="text-sm mt-2">Import your portfolio to get started.</p>
+          <p className="text-sm mt-2">Upload your Fidelity CSV export to get started.</p>
+          {uploadError && (
+            <p className="text-sm mt-2 text-trader-red">{uploadError}</p>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={handleFileChange}
+          />
           <button
-            onClick={() => {}}
-            className="mt-4 px-4 py-2 bg-trader-blue hover:bg-blue-600 rounded-lg text-white font-medium transition-colors"
+            onClick={handleImportClick}
+            disabled={isUploading}
+            className="mt-4 px-4 py-2 bg-trader-blue hover:bg-blue-600 disabled:opacity-50 rounded-lg text-white font-medium transition-colors"
           >
-            Import Portfolio
+            {isUploading ? 'Importing...' : 'Import Fidelity CSV'}
           </button>
         </div>
       </div>
@@ -99,7 +144,23 @@ export function PositionList({ portfolio, selectedPosition, onSelectPosition, on
     <div className="bg-trader-card border border-trader-border rounded-lg overflow-hidden flex flex-col" style={{ maxHeight: '60vh' }}>
       <div className="p-4 border-b border-trader-border flex items-center justify-between">
         <h2 className="text-lg font-semibold">Your Positions</h2>
-        <span className="text-sm text-trader-muted">{portfolio.positions.length} positions</span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-trader-muted">{portfolio.positions.length} positions</span>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <button
+            onClick={handleImportClick}
+            disabled={isUploading}
+            className="text-xs px-2 py-1 bg-trader-border hover:bg-trader-border/80 disabled:opacity-50 rounded transition-colors"
+          >
+            {isUploading ? 'Importing...' : 'Re-import CSV'}
+          </button>
+        </div>
       </div>
 
       <div className="overflow-y-auto flex-1">

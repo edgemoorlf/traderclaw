@@ -450,39 +450,47 @@ traderclaw/
 ├── config/
 │   ├── .env                    # API密钥（git忽略）
 │   ├── .env.example            # 环境文件示例
-│   ├── strategies.yaml         # 策略存储
 │   └── brokers.yaml            # 多账户券商设置
+├── data/
+│   └── traderclaw.db           # SQLite数据库 — 策略和运行时数据（git忽略）
 ├── src/
 │   ├── ai/
-│   │   ├── llm_client.py       # DeepSeek/Gemini/Qwen接口
-│   │   ├── trading_orchestrator.py  # 主交易协调器
-│   │   └── models.py           # AI模型枚举和配置
+│   │   ├── gemini_data_agent.py     # Gemini + Google搜索获取市场数据
+│   │   ├── orchestrator.py          # 主交易协调流水线
+│   │   └── strategy_agents.py       # DeepSeek / Claude / Qwen / GPT 策略代理
 │   ├── strategies/
-│   │   ├── execution_engine.py # 自然语言策略引擎
-│   │   └── consensus.py        # 多模型共识
+│   │   └── execution_engine.py      # 自然语言策略引擎 + 多模型共识
 │   ├── indicators/
-│   │   └── technical.py        # 技术指标计算
+│   │   └── technical.py             # RSI、SMA、MACD、布林带等
 │   ├── application/
-│   │   ├── interfaces/         # 抽象基类
-│   │   │   ├── broker.py       # 券商接口
-│   │   │   └── market_data_source.py
-│   │   └── services/
-│   │       └── position_service.py  # 投资组合管理
+│   │   └── interfaces/
+│   │       ├── broker.py            # 抽象券商接口
+│   │       └── market_data_source.py
 │   ├── infrastructure/
-│   │   ├── market_data/        # 数据客户端
-│   │   │   ├── yahoo_client.py
-│   │   │   ├── coingecko_client.py
-│   │   │   └── polymarket_client.py
-│   │   └── brokers/            # 券商实现
-│   │       ├── alpaca_broker.py
-│   │       ├── okx_broker.py
-│   │       └── broker_manager.py  # 多账户支持
+│   │   ├── database.py              # SQLite持久化层
+│   │   ├── csv_importers.py         # Fidelity CSV导入
+│   │   ├── market_data/
+│   │   │   └── polymarket_client.py # Polymarket Gamma API客户端
+│   │   └── brokers/
+│   │       ├── alpaca_broker.py     # Alpaca美股
+│   │       ├── okx_broker.py        # OKX加密货币
+│   │       └── broker_manager.py    # 多账户支持
 │   └── interfaces/
-│       └── cli/
-│           ├── main.py         # 主CLI入口
-│           └── strategy_cli.py # 策略管理命令
-├── data/
-│   └── imported_positions/     # 保存的投资组合快照
+│       ├── cli/
+│       │   ├── main.py              # 主CLI入口
+│       │   └── strategy_cli.py      # 策略管理命令
+│       └── web/
+│           └── main.py              # FastAPI后端（REST + WebSocket）
+├── web/                             # React + Vite前端
+│   └── src/
+│       ├── components/
+│       │   ├── PositionList.tsx     # 持仓列表，支持CSV上传
+│       │   ├── AIChat.tsx           # 自然语言聊天 + 策略创建
+│       │   ├── AlertPanel.tsx       # 信号和审批面板
+│       │   └── Header.tsx           # 投资组合摘要标题
+│       ├── App.tsx                  # 主仪表板布局
+│       ├── api.ts                   # API/WebSocket基础URL
+│       └── types.ts                 # TypeScript接口定义
 └── tests/
 ```
 

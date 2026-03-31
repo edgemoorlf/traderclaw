@@ -240,12 +240,16 @@ async def cmd_run(args):
     print(f"   Symbols: {', '.join(strategy.symbols)}")
     print()
 
-    # Build user context (simplified for now)
-    user_context = {
-        "total_portfolio_value": 100000.00,
-        "cash_available": 50000.00,
-        "positions": {},
-    }
+    # Load user context from CSV
+    from src.ai.orchestrator import PositionService
+    position_service = PositionService()
+    csv_path = getattr(args, "csv", None)
+    if csv_path:
+        position_service.load_from_csv(csv_path)
+        user_context = asyncio.run(position_service.get_user_context("default"))
+    else:
+        print("Warning: No --csv provided. Running without portfolio context.")
+        user_context = {"total_portfolio_value": 0, "cash_available": 0, "positions": {}}
 
     # Evaluate strategy
     signals = await engine.evaluate_strategy(
@@ -409,6 +413,7 @@ def main():
     run_parser = subparsers.add_parser("run", help="Run strategy evaluation")
     run_parser.add_argument("strategy_id", help="Strategy ID")
     run_parser.add_argument("--account", "-a", help="Broker account to use")
+    run_parser.add_argument("--csv", help="Path to Fidelity CSV for portfolio context")
     run_parser.add_argument("--dry-run", "-n", action="store_true",
                             help="Generate signals but don't execute")
     run_parser.set_defaults(func=lambda args: asyncio.run(cmd_run(args)))
